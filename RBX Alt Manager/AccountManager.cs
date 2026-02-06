@@ -1526,9 +1526,6 @@ namespace RBX_Alt_Manager
 
             Alias.Text = SelectedAccount.Alias;
             DescriptionBox.Text = SelectedAccount.Description;
-
-            if (!string.IsNullOrEmpty(SelectedAccount.GetField("SavedPlaceId"))) SetSelectedSlotPlaceId(SelectedAccount.GetField("SavedPlaceId"));
-            if (!string.IsNullOrEmpty(SelectedAccount.GetField("SavedJobId"))) SetSelectedSlotJobId(SelectedAccount.GetField("SavedJobId"));
         }
 
         private void SetAlias_Click(object sender, EventArgs e)
