@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Images/Image4.png" alt="Roblox Account Manager Enhanced" width="700"/>
+  <img src="Images/preview.png" alt="Roblox Account Manager Enhanced" width="700"/>
 </p>
 
 <h1 align="center">Roblox Account Manager Enhanced</h1>
@@ -29,6 +29,7 @@ This is an **enhanced fork** of the original [Roblox Account Manager](https://gi
 | Feature | Original (ic3w0lf22) | This Fork |
 |---|---|---|
 | **Multi Roblox** | Broken on recent Roblox updates | Fully working — bypasses `singletonMutex`, `singletonEvent`, and the new path-based `.mtx`/`.shm` singleton mechanisms |
+| **Multi-Server Slots** | Single PlaceID + JobID field | **4 server slots** with independent PlaceID and JobID — switch between servers with one click |
 | **Account Search** | Not available | Real-time search bar — instantly filter accounts by username, alias, or description |
 | **Description Box** | Small, single-line | Large multi-line rich text box (240px) — perfect for detailed notes per account |
 | **Roblox Singleton Bypass** | Only handled `ROBLOX_singletonMutex` | Handles ALL 4 singleton mechanisms Roblox uses, including kernel handle closing via Sysinternals |
@@ -48,6 +49,9 @@ Run **multiple Roblox instances simultaneously** without them closing each other
 - Automatically detects and closes singleton handles (`singletonMutex`, `singletonEvent`, `.mtx`, `.shm`) from running Roblox processes using Sysinternals' `handle.exe`
 - Works even if Roblox is already running when you start the manager
 - Automatically cleans up handles after each launch to prepare for the next one
+
+### Multi-Server Slots (4 Servers)
+Pre-configure up to **4 different servers** with their own PlaceID and JobID/VIP link. Select which server to join with a single click on the radio button — no more copy-pasting links every time you want to switch between games. Perfect for grinding multiple games or managing accounts across different experiences simultaneously.
 
 ### Expanded Description Box
 A large, multi-line rich text area to store detailed notes for each account — track inventory, currency, level, purpose, or any information you need at a glance.
@@ -101,8 +105,18 @@ Everything from the original project still works:
 ## Preview
 
 <p align="center">
-  <img src="Images/Image4.png" alt="Main Window" width="700"/>
+  <img src="Images/preview.png" alt="Enhanced UI with Multi-Server Slots and Search Bar" width="700"/>
+  <br/>
+  <i>Enhanced UI — search bar, 4 server slots, expanded description box</i>
 </p>
+
+<details>
+<summary>Original Version (for comparison)</summary>
+<br/>
+<p align="center">
+  <img src="Images/Image4.png" alt="Original Version" width="700"/>
+</p>
+</details>
 
 ---
 
