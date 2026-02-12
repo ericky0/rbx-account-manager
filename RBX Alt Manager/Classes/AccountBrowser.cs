@@ -61,7 +61,7 @@ namespace RBX_Alt_Manager.Classes
             else
                 Position = new Vector2(Screen.PrimaryScreen.WorkingArea.Width / 2 - (Size.X / 2), Screen.PrimaryScreen.WorkingArea.Height / 2 - (Size.Y / 2));
 
-            List<string> Args = new List<string>(Arguments ?? new string[] { "--disable-web-security" });
+            List<string> Args = new List<string>(Arguments ?? Array.Empty<string>());
 
             string ExtensionPath = Path.Combine(Environment.CurrentDirectory, "extension");
             string ConfigPath = Path.Combine(Environment.CurrentDirectory, "BrowserConfig.json");
@@ -147,7 +147,11 @@ namespace RBX_Alt_Manager.Classes
 
             if (Proxy != null) browser.Disconnected += (s, e) => Proxy.Dispose();
 
-            await page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36");
+            await page.SetUserAgentAsync("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36");
+
+            // Clear cookies from previous sessions to prevent stale logins
+            var cdp = await page.Target.CreateCDPSessionAsync();
+            await cdp.SendAsync("Network.clearBrowserCookies");
 
             if (Config?.PreNavigateActions != null)
                 foreach (var action in Config.PreNavigateActions)
@@ -164,7 +168,7 @@ namespace RBX_Alt_Manager.Classes
 
             if (PostPageCreation != null) try { await PostPageCreation(); } catch { }
 
-            try { await page.GoToAsync(Url, new NavigationOptions { Referer = "https://google.com/", Timeout = 300000 }); } catch { }
+            try { await page.GoToAsync(Url, new NavigationOptions { Timeout = 300000 }); } catch { }
 
             if (!string.IsNullOrEmpty(Script)) await page.EvaluateExpressionAsync(Script);
 
