@@ -91,19 +91,50 @@ namespace RBX_Alt_Manager
         public Account(string Cookie, string AccountJSON = null)
         {
             SecurityToken = Cookie;
-            
-            AccountJSON ??= AccountManager.MainClient.Execute(MakeRequest("my/account/json", Method.Get)).Content;
 
-            if (!string.IsNullOrEmpty(AccountJSON) && Utilities.TryParseJson(AccountJSON, out AccountJson Data))
+            if (AccountJSON == null)
             {
-                Username = Data.Name;
-                UserID = Data.UserId;
+                // Use modern authenticated endpoint instead of deprecated /my/account/json
+                var response = AccountManager.UsersClient.Execute(MakeRequest("v1/users/authenticated", Method.Get));
+                DebugLog($"[Account] UsersAPI response: status={response.StatusCode}, content={response.Content?.Substring(0, Math.Min(response.Content?.Length ?? 0, 500))}");
+                AccountJSON = response.Content;
+            }
+            else
+            {
+                DebugLog($"[Account] Using provided AccountJSON: {AccountJSON?.Substring(0, Math.Min(AccountJSON?.Length ?? 0, 500))}");
+            }
 
-                Valid = true;
+            if (!string.IsNullOrEmpty(AccountJSON))
+            {
+                // Try new format first (users.roblox.com: {"id", "name", "displayName"})
+                // then fall back to old format (/my/account/json: {"UserId", "Name"})
+                bool parsed = AccountJSON.TryParseJson(out JObject json);
+                DebugLog($"[Account] JSON parse result: {parsed}, keys={string.Join(",", json?.Properties()?.Select(p => p.Name) ?? Array.Empty<string>())}");
 
-                LastUse = DateTime.Now;
+                if (parsed)
+                {
+                    long id = json["id"]?.Value<long>() ?? json["UserId"]?.Value<long>() ?? 0;
+                    string name = json["name"]?.Value<string>() ?? json["Name"]?.Value<string>();
 
-                AccountManager.LastValidAccount = this;
+                    DebugLog($"[Account] Parsed: id={id}, name={name}");
+
+                    if (id > 0 && !string.IsNullOrEmpty(name))
+                    {
+                        UserID = id;
+                        Username = name;
+                        Valid = true;
+                        LastUse = DateTime.Now;
+                        AccountManager.LastValidAccount = this;
+                    }
+                    else
+                    {
+                        DebugLog($"[Account] INVALID: id={id}, name is null/empty={string.IsNullOrEmpty(name)}");
+                    }
+                }
+            }
+            else
+            {
+                DebugLog("[Account] AccountJSON is null or empty");
             }
         }
 
@@ -114,33 +145,20 @@ namespace RBX_Alt_Manager
             Ticket = string.Empty;
 
             if (!GetCSRFToken(out string Token))
-            {
-                DebugLog($"[GetAuthTicket] {Username}: GetCSRFToken FAILED: {Token}");
                 return false;
-            }
-
-            DebugLog($"[GetAuthTicket] {Username}: CSRF token obtained, requesting auth ticket...");
 
             RestRequest request = MakeRequest("/v1/authentication-ticket/", Method.Post).AddHeader("X-CSRF-TOKEN", Token).AddHeader("Referer", "https://www.roblox.com/games/4924922222/Brookhaven-RP").AddHeader("Content-Type", "application/json");
 
             RestResponse response = AccountManager.AuthClient.Execute(request);
-
-            DebugLog($"[GetAuthTicket] {Username}: Response status={response.StatusCode} ({(int)response.StatusCode}), content={response.Content?.Substring(0, Math.Min(response.Content?.Length ?? 0, 200))}");
-            DebugLog($"[GetAuthTicket] {Username}: Headers: {string.Join(", ", response.Headers?.Select(h => $"{h.Name}={h.Value}") ?? Array.Empty<string>())}");
-
-            if (response.ErrorException != null)
-                DebugLog($"[GetAuthTicket] {Username}: ErrorException: {response.ErrorException.Message}");
 
             Parameter TicketHeader = response.Headers.FirstOrDefault(x => x.Name == "rbx-authentication-ticket");
 
             if (TicketHeader != null)
             {
                 Ticket = (string)TicketHeader.Value;
-                DebugLog($"[GetAuthTicket] {Username}: SUCCESS - got ticket");
                 return true;
             }
 
-            DebugLog($"[GetAuthTicket] {Username}: FAILED - no rbx-authentication-ticket header in response");
             return false;
         }
 
@@ -150,15 +168,9 @@ namespace RBX_Alt_Manager
 
             RestResponse response = AccountManager.AuthClient.Execute(request);
 
-            DebugLog($"[GetCSRFToken] {Username}: Response status={response.StatusCode} ({(int)response.StatusCode}), content={response.Content?.Substring(0, Math.Min(response.Content?.Length ?? 0, 200))}");
-
-            if (response.ErrorException != null)
-                DebugLog($"[GetCSRFToken] {Username}: ErrorException: {response.ErrorException.Message}");
-
             if (response.StatusCode != HttpStatusCode.Forbidden)
             {
                 Result = $"[{(int)response.StatusCode} {response.StatusCode}] {response.Content}";
-                DebugLog($"[GetCSRFToken] {Username}: FAILED - expected 403 Forbidden, got {response.StatusCode}");
                 return false;
             }
 
@@ -178,8 +190,6 @@ namespace RBX_Alt_Manager
             CSRFToken = Token;
             TokenSet = DateTime.Now;
             Result = Token;
-
-            DebugLog($"[GetCSRFToken] {Username}: Token obtained={!string.IsNullOrEmpty(Result)}");
 
             return !string.IsNullOrEmpty(Result);
         }
@@ -530,10 +540,7 @@ namespace RBX_Alt_Manager
                 Random r = new Random(UserID.GetHashCode() ^ Environment.TickCount);
 
                 BrowserTrackerID = r.Next(100000, 175000).ToString() + r.Next(100000, 900000).ToString();
-                DebugLog($"[JoinServer] Generated NEW BrowserTrackerID={BrowserTrackerID} for {Username}");
             }
-
-            DebugLog($"[JoinServer] Launching {Username} (UserID={UserID}, BrowserTrackerID={BrowserTrackerID}, PlaceID={PlaceID})");
 
             try { ClientSettingsPatcher.PatchSettings(); } catch (Exception Ex) { Program.Logger.Error($"Failed to patch ClientAppSettings: {Ex}"); }
 
@@ -549,7 +556,6 @@ namespace RBX_Alt_Manager
                     try
                     {
                         var allProcs = Process.GetProcessesByName("RobloxPlayerBeta");
-                        DebugLog($"[AutoClose] {Username}: Found {allProcs.Length} RobloxPlayerBeta processes, looking for BrowserTrackerID={BrowserTrackerID}");
 
                         foreach (Process proc in allProcs)
                         {
@@ -557,11 +563,8 @@ namespace RBX_Alt_Manager
                             var TrackerMatch = Regex.Match(cmdLine ?? "", @"\-b (\d+)");
                             string TrackerID = TrackerMatch.Success ? TrackerMatch.Groups[1].Value : string.Empty;
 
-                            DebugLog($"[AutoClose] {Username}: Process PID={proc.Id}, TrackerID='{TrackerID}', Match={TrackerID == BrowserTrackerID}");
-
                             if (TrackerID == BrowserTrackerID)
                             {
-                                DebugLog($"[AutoClose] {Username}: KILLING PID={proc.Id} (TrackerID matched)");
                                 try // ignore ObjectDisposedExceptions
                                 {
                                     proc.CloseMainWindow();
@@ -581,13 +584,9 @@ namespace RBX_Alt_Manager
                 string ShareCode = string.IsNullOrEmpty(JobID) ? string.Empty : Regex.Match(JobID, @"share\?code=([^&]+)")?.Groups[1]?.Value;
                 string AccessCode = JobID;
 
-                DebugLog($"[VIPJoin] {Username}: JobID='{JobID}', LinkCode='{LinkCode}', ShareCode='{ShareCode}', JoinVIP={JoinVIP}");
-
                 // Handle new Roblox share link format: https://www.roblox.com/share?code=XXX&type=Server
                 if (string.IsNullOrEmpty(LinkCode) && !string.IsNullOrEmpty(ShareCode))
                 {
-                    DebugLog($"[VIPJoin] {Username}: Resolving share link code={ShareCode}...");
-
                     try
                     {
                         // Try Roblox share-links API to resolve the code
@@ -599,8 +598,6 @@ namespace RBX_Alt_Manager
                         resolveRequest.AddJsonBody(new { linkId = ShareCode, linkType = "Server" });
 
                         RestResponse resolveResponse = await resolveClient.ExecuteAsync(resolveRequest);
-
-                        DebugLog($"[VIPJoin] {Username}: ShareLinks API status={resolveResponse.StatusCode} ({(int)resolveResponse.StatusCode}), content={resolveResponse.Content?.Substring(0, Math.Min(resolveResponse.Content?.Length ?? 0, 500))}");
 
                         if (resolveResponse.IsSuccessful && !string.IsNullOrEmpty(resolveResponse.Content))
                         {
@@ -614,8 +611,6 @@ namespace RBX_Alt_Manager
 
                             string accessCodeFromApi = json.SelectToken("..accessCode")?.ToString() ?? "";
 
-                            DebugLog($"[VIPJoin] {Username}: API parsed: privateLinkCode='{privateLinkCode}', accessCode='{accessCodeFromApi}'");
-
                             if (!string.IsNullOrEmpty(privateLinkCode))
                             {
                                 LinkCode = privateLinkCode;
@@ -624,27 +619,21 @@ namespace RBX_Alt_Manager
                             {
                                 JoinVIP = true;
                                 AccessCode = accessCodeFromApi;
-                                DebugLog($"[VIPJoin] {Username}: Using accessCode directly from API");
                             }
                         }
 
                         // Fallback: try following the share URL redirect chain
                         if (string.IsNullOrEmpty(LinkCode) && !JoinVIP)
                         {
-                            DebugLog($"[VIPJoin] {Username}: API didn't return linkCode, trying share-links page...");
-
                             var shareClient = new RestSharp.RestClient(new RestSharp.RestClientOptions("https://www.roblox.com") { FollowRedirects = false });
                             var shareRequest = new RestRequest($"/share-links?code={ShareCode}&type=Server", Method.Get);
                             shareRequest.AddCookie(".ROBLOSECURITY", SecurityToken, "/", ".roblox.com");
 
                             RestResponse shareResponse = await shareClient.ExecuteAsync(shareRequest);
 
-                            DebugLog($"[VIPJoin] {Username}: share-links status={shareResponse.StatusCode}, content (first 500)={shareResponse.Content?.Substring(0, Math.Min(shareResponse.Content?.Length ?? 0, 500))}");
-
                             string location = shareResponse.Headers?.FirstOrDefault(h => h.Name.ToLower() == "location")?.Value?.ToString() ?? "";
                             if (!string.IsNullOrEmpty(location))
                             {
-                                DebugLog($"[VIPJoin] {Username}: share-links redirect: {location}");
                                 var plcMatch = Regex.Match(location, "privateServerLinkCode=([^&]+)");
                                 if (plcMatch.Success) LinkCode = plcMatch.Groups[1].Value;
                             }
@@ -652,20 +641,17 @@ namespace RBX_Alt_Manager
                     }
                     catch (Exception ex)
                     {
-                        DebugLog($"[VIPJoin] {Username}: Error resolving share link: {ex.Message}");
+                        DebugLog($"[VIPJoin] Error resolving share link: {ex.Message}");
                     }
                 }
 
                 if (!string.IsNullOrEmpty(LinkCode))
                 {
                     string vipUrl = string.Format("/games/{0}?privateServerLinkCode={1}", PlaceID, LinkCode);
-                    DebugLog($"[VIPJoin] {Username}: Requesting {vipUrl}");
 
                     RestRequest request = MakeRequest(vipUrl, Method.Get).AddHeader("X-CSRF-TOKEN", Token).AddHeader("Referer", "https://www.roblox.com/games/4924922222/Brookhaven-RP");
 
                     RestResponse response = await AccountManager.MainClient.ExecuteAsync(request);
-
-                    DebugLog($"[VIPJoin] {Username}: Response status={response.StatusCode} ({(int)response.StatusCode}), content length={response.Content?.Length ?? 0}");
 
                     if (response.StatusCode == HttpStatusCode.OK)
                     {
@@ -673,22 +659,13 @@ namespace RBX_Alt_Manager
                         {
                             JoinVIP = true;
                             AccessCode = Code;
-                            DebugLog($"[VIPJoin] {Username}: ParseAccessCode SUCCESS, AccessCode={Code}");
-                        }
-                        else
-                        {
-                            DebugLog($"[VIPJoin] {Username}: ParseAccessCode FAILED (first 500 chars): {response.Content?.Substring(0, Math.Min(response.Content?.Length ?? 0, 500))}");
                         }
                     }
                     else if (response.StatusCode == HttpStatusCode.Redirect)
                     {
-                        DebugLog($"[VIPJoin] {Username}: Got redirect, trying Web13Client...");
-
                         request = MakeRequest(string.Format("/games/{0}?privateServerLinkCode={1}", PlaceID, LinkCode), Method.Get).AddHeader("X-CSRF-TOKEN", Token).AddHeader("Referer", "https://www.roblox.com/games/4924922222/Brookhaven-RP");
 
                         RestResponse result = await AccountManager.Web13Client.ExecuteAsync(request);
-
-                        DebugLog($"[VIPJoin] {Username}: Web13 response status={result.StatusCode}, content length={result.Content?.Length ?? 0}");
 
                         if (result.StatusCode == HttpStatusCode.OK)
                         {
@@ -767,8 +744,13 @@ namespace RBX_Alt_Manager
                     {
                         try
                         {
+                            DebugLog($"[MultiRoblox] === LAUNCH START: {Username} (PlaceID={PlaceID}) ===");
+                            DebugLog(SnapshotRobloxProcesses("BeforeCleanup"));
+
                             // Close singleton handles from existing Roblox processes before launching new one
                             CloseRobloxSingletonHandles();
+
+                            DebugLog(SnapshotRobloxProcesses("AfterCleanup"));
 
                             ProcessStartInfo LaunchInfo = new ProcessStartInfo();
 
@@ -782,11 +764,21 @@ namespace RBX_Alt_Manager
 
                             Launcher.WaitForExit();
 
+                            DebugLog($"[MultiRoblox] Protocol launcher exited for {Username}");
+                            DebugLog(SnapshotRobloxProcesses("AfterLaunch"));
+
                             AccountManager.Instance.NextAccount();
 
                             _ = Task.Run(AdjustWindowPosition);
                             // Close handles from newly started Roblox after it creates them
-                            _ = Task.Run(async () => { await Task.Delay(10000); CloseRobloxSingletonHandles(); });
+                            _ = Task.Run(async () =>
+                            {
+                                await Task.Delay(10000);
+                                DebugLog($"[MultiRoblox] === DELAYED CLEANUP (10s) for {Username} ===");
+                                DebugLog(SnapshotRobloxProcesses("Before10sCleanup"));
+                                CloseRobloxSingletonHandles();
+                                DebugLog(SnapshotRobloxProcesses("After10sCleanup"));
+                            });
                         }
                         catch (Exception x)
                         {
@@ -842,6 +834,22 @@ namespace RBX_Alt_Manager
             }
         }
 
+        private static string SnapshotRobloxProcesses(string label)
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName("RobloxPlayerBeta");
+                if (procs.Length == 0) return $"[Snapshot:{label}] 0 Roblox processes";
+                var details = procs.Select(p =>
+                {
+                    try { return $"PID={p.Id},Window={p.MainWindowHandle != IntPtr.Zero}"; }
+                    catch { return $"PID={p.Id},Window=?"; }
+                });
+                return $"[Snapshot:{label}] {procs.Length} Roblox: [{string.Join(", ", details)}]";
+            }
+            catch { return $"[Snapshot:{label}] Error reading processes"; }
+        }
+
         private static readonly object _debugLogLock = new object();
         private static void DebugLog(string message)
         {
@@ -861,19 +869,33 @@ namespace RBX_Alt_Manager
         {
             try
             {
+                // Kill zombie Roblox processes (no visible window = background ghost)
+                var allRoblox = Process.GetProcessesByName("RobloxPlayerBeta");
+                foreach (var proc in allRoblox)
+                {
+                    try
+                    {
+                        if (proc.MainWindowHandle == IntPtr.Zero)
+                        {
+                            DebugLog($"[MultiRoblox] Killing zombie Roblox process PID={proc.Id} (no window)");
+                            proc.Kill();
+                            proc.WaitForExit(3000);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DebugLog($"[MultiRoblox] Failed to kill zombie PID={proc.Id}: {ex.Message}");
+                    }
+                }
+
                 string handlePath = RBX_Alt_Manager.Classes.RobloxWatcher.HandlePath;
 
                 if (!File.Exists(handlePath))
                     File.WriteAllBytes(handlePath, RBX_Alt_Manager.Properties.Resources.handle);
 
+                // Re-fetch after killing zombies
                 var robloxProcs = Process.GetProcessesByName("RobloxPlayerBeta");
-                if (robloxProcs.Length == 0)
-                {
-                    DebugLog("[MultiRoblox] No Roblox processes found, nothing to close");
-                    return;
-                }
-
-                DebugLog($"[MultiRoblox] Closing singleton handles from {robloxProcs.Length} Roblox process(es)");
+                if (robloxProcs.Length == 0) return;
 
                 foreach (var proc in robloxProcs)
                 {
@@ -903,8 +925,10 @@ namespace RBX_Alt_Manager
                                 trimmed.Contains("RobloxPlayerBeta.exe.shm"))
                             {
                                 string handleHex = trimmed.Split(':')[0].Trim();
-
-                                DebugLog($"[MultiRoblox] Closing handle {handleHex} from PID={proc.Id}: {trimmed}");
+                                // Extract just the handle name for cleaner logging
+                                string handleName = trimmed.Contains("singletonMutex") ? "singletonMutex" :
+                                    trimmed.Contains("singletonEvent") ? "singletonEvent" :
+                                    trimmed.Contains(".mtx") ? ".mtx" : ".shm";
 
                                 ProcessStartInfo closePsi = new ProcessStartInfo(handlePath)
                                 {
@@ -917,7 +941,7 @@ namespace RBX_Alt_Manager
                                 Process closeProc = Process.Start(closePsi);
                                 closeProc.WaitForExit(5000);
 
-                                DebugLog($"[MultiRoblox] Handle {handleHex} close result: exit code {closeProc.ExitCode}");
+                                DebugLog($"[MultiRoblox] Closed {handleName} ({handleHex}) from PID={proc.Id} => exit={closeProc.ExitCode}");
                             }
                         }
                     }

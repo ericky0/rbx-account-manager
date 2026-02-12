@@ -270,7 +270,8 @@ namespace RBX_Alt_Manager
         {
             AccountsView.InvokeIfRequired(() =>
             {
-                AccountsView.BuildList();
+                AccountsView.SetObjects(AccountsList);
+
                 if (AccountsView.ShowGroups) AccountsView.BuildGroups();
 
                 if (obj != null)
@@ -603,7 +604,11 @@ namespace RBX_Alt_Manager
 
         public static Account AddAccount(string SecurityToken, string Password = "", string AccountJSON = null)
         {
+            DebugLog($"[AddAccount] Called, token length={SecurityToken?.Length ?? 0}, hasPassword={!string.IsNullOrEmpty(Password)}, hasJSON={AccountJSON != null}");
+
             Account account = new Account(SecurityToken, AccountJSON);
+
+            DebugLog($"[AddAccount] Account created: Valid={account.Valid}, Username={account.Username ?? "null"}, UserID={account.UserID}");
 
             if (account.Valid)
             {
@@ -619,12 +624,14 @@ namespace RBX_Alt_Manager
                     exists.Password = Password;
                     exists.LastUse = DateTime.Now;
 
+                    DebugLog($"[AddAccount] Updated existing account: {exists.Username}");
                     Instance.RefreshView(exists);
                 }
                 else
                 {
                     AccountsList.Add(account);
 
+                    DebugLog($"[AddAccount] Added new account: {account.Username} (total: {AccountsList.Count})");
                     Instance.RefreshView(account);
                 }
 
@@ -633,6 +640,7 @@ namespace RBX_Alt_Manager
                 return account;
             }
 
+            DebugLog("[AddAccount] FAILED: account.Valid is false, account discarded");
             return null;
         }
 
@@ -668,6 +676,8 @@ namespace RBX_Alt_Manager
 
         private void AccountManager_Load(object sender, EventArgs e)
         {
+            try { File.Delete(Path.Combine(Environment.CurrentDirectory, "debug_log.txt")); } catch { }
+
             PasswordPanel.Dock = DockStyle.Fill;
 
             string AFN = Path.Combine(Directory.GetCurrentDirectory(), "Auto Update.exe");
@@ -1301,10 +1311,34 @@ namespace RBX_Alt_Manager
         {
             bool Enabled = General.Get<bool>("EnableMultiRbx");
 
-            DebugLog($"[MultiRoblox] EnableMultiRbx={Enabled}, rbxMultiMutex={(rbxMultiMutex == null ? "null" : "exists")}, rbxSingletonEvent={(rbxSingletonEvent == null ? "null" : "exists")}");
-
             if (Enabled && rbxMultiMutex == null)
             {
+                DebugLog("[MultiRoblox] === APP STARTUP: Acquiring singleton locks ===");
+
+                // Kill zombie Roblox processes (no visible window) before acquiring mutex
+                try
+                {
+                    var zombies = System.Diagnostics.Process.GetProcessesByName("RobloxPlayerBeta");
+                    int killed = 0;
+                    foreach (var proc in zombies)
+                    {
+                        try
+                        {
+                            if (proc.MainWindowHandle == IntPtr.Zero)
+                            {
+                                DebugLog($"[MultiRoblox] Killing zombie PID={proc.Id}");
+                                proc.Kill();
+                                proc.WaitForExit(3000);
+                                killed++;
+                            }
+                        }
+                        catch { }
+                    }
+                    if (zombies.Length > 0)
+                        DebugLog($"[MultiRoblox] Found {zombies.Length} Roblox processes, killed {killed} zombies");
+                }
+                catch { }
+
                 for (int attempt = 1; attempt <= 3; attempt++)
                 {
                     try
@@ -1313,22 +1347,21 @@ namespace RBX_Alt_Manager
 
                         if (rbxMultiMutex.WaitOne(attempt == 1 ? 0 : 2000, false))
                         {
-                            DebugLog($"[MultiRoblox] Successfully acquired ROBLOX_singletonMutex on attempt {attempt}");
+                            DebugLog($"[MultiRoblox] Mutex acquired (attempt {attempt})");
                             break;
                         }
 
-                        DebugLog($"[MultiRoblox] Attempt {attempt}: WaitOne returned false, mutex is held by another process");
                         rbxMultiMutex.Close();
                         rbxMultiMutex = null;
                     }
                     catch (AbandonedMutexException)
                     {
-                        DebugLog($"[MultiRoblox] Attempt {attempt}: Acquired ABANDONED mutex (previous owner crashed)");
+                        DebugLog($"[MultiRoblox] Mutex acquired (abandoned, attempt {attempt})");
                         break;
                     }
                     catch (Exception ex)
                     {
-                        DebugLog($"[MultiRoblox] Attempt {attempt}: Exception: {ex.Message}");
+                        DebugLog($"[MultiRoblox] Mutex attempt {attempt} failed: {ex.Message}");
                         try { rbxMultiMutex?.Close(); } catch { }
                         rbxMultiMutex = null;
                     }
@@ -1342,11 +1375,11 @@ namespace RBX_Alt_Manager
                     try
                     {
                         rbxSingletonEvent = new EventWaitHandle(false, EventResetMode.ManualReset, "ROBLOX_singletonEvent");
-                        DebugLog("[MultiRoblox] Successfully created/acquired ROBLOX_singletonEvent");
+                        DebugLog("[MultiRoblox] Event acquired");
                     }
                     catch (Exception ex)
                     {
-                        DebugLog($"[MultiRoblox] Failed to create ROBLOX_singletonEvent: {ex.Message}");
+                        DebugLog($"[MultiRoblox] Event failed: {ex.Message}");
                     }
                 }
 
@@ -1668,6 +1701,8 @@ namespace RBX_Alt_Manager
                            (account.Description ?? "").ToLower().Contains(searchText);
                 });
             }
+
+            if (AccountsView.ShowGroups) AccountsView.BuildGroups();
         }
 
         private void removeAccountToolStripMenuItem_Click(object sender, EventArgs e)

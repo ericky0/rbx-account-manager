@@ -304,6 +304,10 @@ namespace RBX_Alt_Manager.Classes
         {
             Uri Url = new Uri(e.Request.Url);
 
+            // Log all POST requests to auth.roblox.com for debugging
+            if (e.Request.Method == HttpMethod.Post && Url.Host == "auth.roblox.com")
+                Program.Logger.Info($"[AddAccount] POST {Url.AbsolutePath} => {(int)e.Request.Response.Status} {e.Request.Response.Status}");
+
             if (e.Request.Response.Status == HttpStatusCode.OK && e.Request.Method == HttpMethod.Post && Url.Host == "auth.roblox.com")
             {
                 if ((Url.AbsolutePath == "/v2/login" || Url.AbsolutePath == "/v2/signup") && e.Request.PostData != null && Utilities.TryParseJson((string)e.Request.PostData, out JObject LoginData))
@@ -311,8 +315,12 @@ namespace RBX_Alt_Manager.Classes
                     if (LoginData?["password"]?.Value<string>() is string password && !string.IsNullOrEmpty(password) && LoginData?["ctype"].Value<string>() is string loginType && loginType.ToLowerInvariant() == "username")
                         Password = password;
 
-                    if ((await page.GetCookiesAsync("https://roblox.com/")).FirstOrDefault(Cookie => Cookie.Name == ".ROBLOSECURITY") is CookieParam Cookie)
-                        await AddAccount(Cookie);
+                    var cookies = await page.GetCookiesAsync("https://roblox.com/");
+                    var cookie = cookies.FirstOrDefault(c => c.Name == ".ROBLOSECURITY");
+                    Program.Logger.Info($"[AddAccount] Login OK, cookie found: {cookie != null}, cookie length: {cookie?.Value?.Length ?? 0}");
+
+                    if (cookie != null)
+                        await AddAccount(cookie);
                 }
                 else if (Regex.IsMatch(Url.AbsolutePath, "/users/[0-9]+/two-step-verification/login") && (await page.GetCookiesAsync("https://roblox.com/")).FirstOrDefault(Cookie => Cookie.Name == ".ROBLOSECURITY") is CookieParam Cookie)
                     await AddAccount(Cookie);
@@ -321,13 +329,37 @@ namespace RBX_Alt_Manager.Classes
 
         private async Task AddAccount(CookieParam SecurityToken)
         {
-            if (Proxy == null)
-                AccountManager.AddAccount(SecurityToken.Value, Password);
-            else
+            Program.Logger.Info($"[AddAccount] AddAccount called, token length: {SecurityToken.Value?.Length ?? 0}, hasPassword: {!string.IsNullOrEmpty(Password)}");
+
+            string accountJson = null;
+
+            try
             {
-                await page.WaitForNavigationAsync();
-                AccountManager.AddAccount(SecurityToken.Value, Password, await page.EvaluateFunctionAsync<string>("() => { return fetch('/my/account/json').then(x=>x.text()); }"));
+                // Wait for page to finish navigating to home after login
+                await page.WaitForNavigationAsync(new NavigationOptions { Timeout = 15000 });
+
+                // Extract user info from the browser page (works even for moderated accounts)
+                accountJson = await page.EvaluateFunctionAsync<string>(@"() => {
+                    var meta = document.querySelector('meta[name=""user-data""]');
+                    if (meta && meta.getAttribute('data-userid')) {
+                        return JSON.stringify({
+                            id: parseInt(meta.getAttribute('data-userid')),
+                            name: meta.getAttribute('data-name') || meta.getAttribute('data-displayname'),
+                            displayName: meta.getAttribute('data-displayname')
+                        });
+                    }
+                    return null;
+                }");
+
+                Program.Logger.Info($"[AddAccount] Browser meta extraction: {accountJson ?? "null"}");
             }
+            catch (Exception ex)
+            {
+                Program.Logger.Error($"[AddAccount] Browser extraction failed: {ex.Message}");
+            }
+
+            var result = AccountManager.AddAccount(SecurityToken.Value, Password, accountJson);
+            Program.Logger.Info($"[AddAccount] Result: {(result != null ? $"OK user={result.Username} id={result.UserID}" : "FAILED (null)")}");
 
             Password = null;
 
