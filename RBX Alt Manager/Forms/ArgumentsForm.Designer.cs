@@ -30,6 +30,7 @@
         {
             this.TeleportCB = new System.Windows.Forms.CheckBox();
             this.OldJoin = new System.Windows.Forms.CheckBox();
+            this.BrowserJoinCB = new System.Windows.Forms.CheckBox();
             this.button1 = new System.Windows.Forms.Button();
             this.textBox1 = new System.Windows.Forms.TextBox();
             this.SuspendLayout();
@@ -55,10 +56,21 @@
             this.OldJoin.Text = "Use Old Join Method";
             this.OldJoin.UseVisualStyleBackColor = true;
             this.OldJoin.CheckedChanged += new System.EventHandler(this.OldJoin_CheckedChanged);
-            // 
+            //
+            // BrowserJoinCB
+            //
+            this.BrowserJoinCB.AutoSize = true;
+            this.BrowserJoinCB.Location = new System.Drawing.Point(13, 59);
+            this.BrowserJoinCB.Name = "BrowserJoinCB";
+            this.BrowserJoinCB.Size = new System.Drawing.Size(186, 17);
+            this.BrowserJoinCB.TabIndex = 4;
+            this.BrowserJoinCB.Text = "Browser Join (fixes captcha issue)";
+            this.BrowserJoinCB.UseVisualStyleBackColor = true;
+            this.BrowserJoinCB.CheckedChanged += new System.EventHandler(this.BrowserJoinCB_CheckedChanged);
+            //
             // button1
             // 
-            this.button1.Location = new System.Drawing.Point(10, 85);
+            this.button1.Location = new System.Drawing.Point(10, 108);
             this.button1.Name = "button1";
             this.button1.Size = new System.Drawing.Size(75, 23);
             this.button1.TabIndex = 2;
@@ -68,7 +80,7 @@
             // 
             // textBox1
             // 
-            this.textBox1.Location = new System.Drawing.Point(10, 59);
+            this.textBox1.Location = new System.Drawing.Point(10, 82);
             this.textBox1.Name = "textBox1";
             this.textBox1.Size = new System.Drawing.Size(248, 20);
             this.textBox1.TabIndex = 3;
@@ -80,10 +92,11 @@
             this.ClientSize = new System.Drawing.Size(273, 182);
             this.Controls.Add(this.textBox1);
             this.Controls.Add(this.button1);
+            this.Controls.Add(this.BrowserJoinCB);
             this.Controls.Add(this.OldJoin);
             this.Controls.Add(this.TeleportCB);
-            this.MaximumSize = new System.Drawing.Size(289, 221);
-            this.MinimumSize = new System.Drawing.Size(289, 221);
+            this.MaximumSize = new System.Drawing.Size(289, 244);
+            this.MinimumSize = new System.Drawing.Size(289, 244);
             this.Name = "ArgumentsForm";
             this.ShowIcon = false;
             this.Text = "ArgumentsForm";
@@ -98,6 +111,7 @@
 
         private System.Windows.Forms.CheckBox TeleportCB;
         private System.Windows.Forms.CheckBox OldJoin;
+        private System.Windows.Forms.CheckBox BrowserJoinCB;
         private System.Windows.Forms.Button button1;
         private System.Windows.Forms.TextBox textBox1;
     }

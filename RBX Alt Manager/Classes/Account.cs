@@ -544,6 +544,27 @@ namespace RBX_Alt_Manager
 
             try { ClientSettingsPatcher.PatchSettings(); } catch (Exception Ex) { Program.Logger.Error($"Failed to patch ClientAppSettings: {Ex}"); }
 
+            // Browser Join: open game page in Edge so user can solve captcha in a real browser
+            // Detects share links and private server URLs in JobID
+            bool isPrivateServerUrl = !string.IsNullOrEmpty(JobID) &&
+                (JobID.Contains("share?code=") || JobID.Contains("privateServerLinkCode="));
+
+            if (isPrivateServerUrl)
+            {
+                string shareCode = Regex.Match(JobID, @"share\?code=([^&]+)")?.Groups[1]?.Value ?? "";
+                string linkCode = Regex.Match(JobID, "privateServerLinkCode=([^&]+)")?.Groups[1]?.Value ?? "";
+
+                string gameUrl;
+                if (!string.IsNullOrEmpty(shareCode))
+                    gameUrl = $"https://www.roblox.com/share?code={shareCode}&type=Server";
+                else if (!string.IsNullOrEmpty(linkCode))
+                    gameUrl = $"https://www.roblox.com/games/{PlaceID}?privateServerLinkCode={linkCode}";
+                else
+                    gameUrl = JobID.StartsWith("http") ? JobID : $"https://www.roblox.com/games/{PlaceID}?privateServerLinkCode={JobID}";
+
+                return await EdgeBrowserJoin.Launch(this, gameUrl);
+            }
+
             if (!GetCSRFToken(out string Token)) return $"ERROR: Account Session Expired, re-add the account or try again. (Invalid X-CSRF-Token)\n{Token}";
 
             if (AccountManager.ShuffleJobID && string.IsNullOrEmpty(JobID))
@@ -551,11 +572,14 @@ namespace RBX_Alt_Manager
 
             if (GetAuthTicket(out string Ticket))
             {
+                DebugLog($"[Launch] === STARTING LAUNCH for {Username} (BrowserTrackerID={BrowserTrackerID}, PlaceID={PlaceID}) ===");
+
                 if (AccountManager.General.Get<bool>("AutoCloseLastProcess"))
                 {
                     try
                     {
                         var allProcs = Process.GetProcessesByName("RobloxPlayerBeta");
+                        DebugLog($"[Launch] AutoCloseLastProcess: checking {allProcs.Length} processes for TrackerID={BrowserTrackerID}");
 
                         foreach (Process proc in allProcs)
                         {
@@ -563,8 +587,11 @@ namespace RBX_Alt_Manager
                             var TrackerMatch = Regex.Match(cmdLine ?? "", @"\-b (\d+)");
                             string TrackerID = TrackerMatch.Success ? TrackerMatch.Groups[1].Value : string.Empty;
 
+                            DebugLog($"[Launch] AutoClose check: PID={proc.Id}, TrackerID={TrackerID}, Match={TrackerID == BrowserTrackerID}");
+
                             if (TrackerID == BrowserTrackerID)
                             {
+                                DebugLog($"[Launch] CLOSING previous process PID={proc.Id} for {Username} (same TrackerID)");
                                 try // ignore ObjectDisposedExceptions
                                 {
                                     proc.CloseMainWindow();
@@ -582,7 +609,8 @@ namespace RBX_Alt_Manager
 
                 string LinkCode = string.IsNullOrEmpty(JobID) ? string.Empty : Regex.Match(JobID, "privateServerLinkCode=([^&]+)")?.Groups[1]?.Value;
                 string ShareCode = string.IsNullOrEmpty(JobID) ? string.Empty : Regex.Match(JobID, @"share\?code=([^&]+)")?.Groups[1]?.Value;
-                string AccessCode = JobID;
+                bool IsShareLink = !string.IsNullOrEmpty(ShareCode);
+                string AccessCode = IsShareLink ? string.Empty : JobID;
 
                 // Handle new Roblox share link format: https://www.roblox.com/share?code=XXX&type=Server
                 if (string.IsNullOrEmpty(LinkCode) && !string.IsNullOrEmpty(ShareCode))
@@ -591,10 +619,25 @@ namespace RBX_Alt_Manager
                     {
                         // Try Roblox share-links API to resolve the code
                         var resolveClient = new RestSharp.RestClient(new RestSharp.RestClientOptions("https://apis.roblox.com") { });
+
+                        // Get CSRF token specifically for apis.roblox.com (auth.roblox.com token doesn't work here)
+                        string apisToken = Token;
+                        var csrfProbe = new RestRequest("/sharelinks/v1/resolve-link", Method.Post);
+                        csrfProbe.AddCookie(".ROBLOSECURITY", SecurityToken, "/", ".roblox.com");
+                        csrfProbe.AddHeader("Content-Type", "application/json");
+                        csrfProbe.AddJsonBody(new { linkId = ShareCode, linkType = "Server" });
+                        RestResponse csrfResponse = await resolveClient.ExecuteAsync(csrfProbe);
+
+                        if (csrfResponse.StatusCode == HttpStatusCode.Forbidden)
+                        {
+                            var csrfHeader = csrfResponse.Headers?.FirstOrDefault(h => h.Name.ToLower() == "x-csrf-token");
+                            if (csrfHeader != null) apisToken = (string)csrfHeader.Value;
+                        }
+
                         var resolveRequest = new RestRequest("/sharelinks/v1/resolve-link", Method.Post);
                         resolveRequest.AddCookie(".ROBLOSECURITY", SecurityToken, "/", ".roblox.com");
                         resolveRequest.AddHeader("Content-Type", "application/json");
-                        resolveRequest.AddHeader("X-CSRF-TOKEN", Token);
+                        resolveRequest.AddHeader("X-CSRF-TOKEN", apisToken);
                         resolveRequest.AddJsonBody(new { linkId = ShareCode, linkType = "Server" });
 
                         RestResponse resolveResponse = await resolveClient.ExecuteAsync(resolveRequest);
@@ -643,6 +686,10 @@ namespace RBX_Alt_Manager
                     {
                         DebugLog($"[VIPJoin] Error resolving share link: {ex.Message}");
                     }
+
+                    // If share link resolution failed completely, return error instead of proceeding with malformed URL
+                    if (string.IsNullOrEmpty(LinkCode) && string.IsNullOrEmpty(AccessCode))
+                        return "ERROR: Failed to resolve private server share link. The link may be invalid or expired.";
                 }
 
                 if (!string.IsNullOrEmpty(LinkCode))
@@ -770,6 +817,34 @@ namespace RBX_Alt_Manager
                             AccountManager.Instance.NextAccount();
 
                             _ = Task.Run(AdjustWindowPosition);
+
+                            // Monitor all Roblox processes for unexpected exits
+                            _ = Task.Run(async () =>
+                            {
+                                await Task.Delay(2000); // Wait for process to stabilize
+                                var monitoredProcs = Process.GetProcessesByName("RobloxPlayerBeta");
+                                DebugLog($"[ExitMonitor] Watching {monitoredProcs.Length} Roblox processes after launching {Username}");
+                                foreach (var mp in monitoredProcs)
+                                {
+                                    var pid = mp.Id;
+                                    string cmdLine = "";
+                                    try { cmdLine = mp.GetCommandLine() ?? ""; } catch { }
+                                    var trackerMatch = Regex.Match(cmdLine, @"\-b (\d+)");
+                                    string tracker = trackerMatch.Success ? trackerMatch.Groups[1].Value : "none";
+                                    try
+                                    {
+                                        mp.EnableRaisingEvents = true;
+                                        mp.Exited += (s, ev) =>
+                                        {
+                                            int exitCode = -1;
+                                            try { exitCode = ((Process)s).ExitCode; } catch { }
+                                            DebugLog($"[ExitMonitor] PROCESS EXITED: PID={pid}, Tracker={tracker}, ExitCode={exitCode}");
+                                        };
+                                    }
+                                    catch (Exception ex) { DebugLog($"[ExitMonitor] Failed to monitor PID={pid}: {ex.Message}"); }
+                                }
+                            });
+
                             // Close handles from newly started Roblox after it creates them
                             _ = Task.Run(async () =>
                             {
@@ -842,8 +917,18 @@ namespace RBX_Alt_Manager
                 if (procs.Length == 0) return $"[Snapshot:{label}] 0 Roblox processes";
                 var details = procs.Select(p =>
                 {
-                    try { return $"PID={p.Id},Window={p.MainWindowHandle != IntPtr.Zero}"; }
-                    catch { return $"PID={p.Id},Window=?"; }
+                    try
+                    {
+                        bool hasWindow = p.MainWindowHandle != IntPtr.Zero;
+                        string cmdLine = "";
+                        try { cmdLine = p.GetCommandLine() ?? ""; } catch { cmdLine = "N/A"; }
+                        var trackerMatch = Regex.Match(cmdLine, @"\-b (\d+)");
+                        string tracker = trackerMatch.Success ? trackerMatch.Groups[1].Value : "none";
+                        double ageSec = 0;
+                        try { ageSec = (DateTime.Now - p.StartTime).TotalSeconds; } catch { }
+                        return $"PID={p.Id},Window={hasWindow},Age={ageSec:F1}s,Tracker={tracker}";
+                    }
+                    catch { return $"PID={p.Id},Window=?,Age=?,Tracker=?"; }
                 });
                 return $"[Snapshot:{label}] {procs.Length} Roblox: [{string.Join(", ", details)}]";
             }
@@ -870,21 +955,37 @@ namespace RBX_Alt_Manager
             try
             {
                 // Kill zombie Roblox processes (no visible window = background ghost)
+                // BUT protect processes younger than 30 seconds (they might still be loading)
                 var allRoblox = Process.GetProcessesByName("RobloxPlayerBeta");
+                DebugLog($"[MultiRoblox] CloseRobloxSingletonHandles: found {allRoblox.Length} Roblox processes");
+
                 foreach (var proc in allRoblox)
                 {
                     try
                     {
+                        double ageSec = 0;
+                        try { ageSec = (DateTime.Now - proc.StartTime).TotalSeconds; } catch { }
+
                         if (proc.MainWindowHandle == IntPtr.Zero)
                         {
-                            DebugLog($"[MultiRoblox] Killing zombie Roblox process PID={proc.Id} (no window)");
+                            if (ageSec < 30)
+                            {
+                                DebugLog($"[MultiRoblox] SKIPPING young process PID={proc.Id} (age={ageSec:F1}s, no window yet - still loading)");
+                                continue;
+                            }
+
+                            DebugLog($"[MultiRoblox] Killing zombie Roblox process PID={proc.Id} (no window, age={ageSec:F1}s)");
                             proc.Kill();
                             proc.WaitForExit(3000);
+                        }
+                        else
+                        {
+                            DebugLog($"[MultiRoblox] Keeping alive PID={proc.Id} (has window, age={ageSec:F1}s)");
                         }
                     }
                     catch (Exception ex)
                     {
-                        DebugLog($"[MultiRoblox] Failed to kill zombie PID={proc.Id}: {ex.Message}");
+                        DebugLog($"[MultiRoblox] Failed to check/kill PID={proc.Id}: {ex.Message}");
                     }
                 }
 
@@ -895,6 +996,7 @@ namespace RBX_Alt_Manager
 
                 // Re-fetch after killing zombies
                 var robloxProcs = Process.GetProcessesByName("RobloxPlayerBeta");
+                DebugLog($"[MultiRoblox] After zombie cleanup: {robloxProcs.Length} Roblox processes remaining");
                 if (robloxProcs.Length == 0) return;
 
                 foreach (var proc in robloxProcs)
@@ -913,7 +1015,37 @@ namespace RBX_Alt_Manager
                         string output = handleProc.StandardOutput.ReadToEnd();
                         handleProc.WaitForExit(10000);
 
+                        // Log ALL mutex/event/section handles to detect if Roblox renamed them
                         string[] lines = output.Split('\n');
+                        int mutantCount = 0, eventCount = 0, sectionCount = 0;
+                        var interestingHandles = new System.Collections.Generic.List<string>();
+
+                        foreach (string line in lines)
+                        {
+                            string trimmed = line.Trim();
+                            if (string.IsNullOrEmpty(trimmed)) continue;
+
+                            // Count handle types
+                            if (trimmed.Contains("Mutant")) mutantCount++;
+                            if (trimmed.Contains("Event")) eventCount++;
+                            if (trimmed.Contains("Section")) sectionCount++;
+
+                            // Log anything that looks like a singleton/mutex pattern (case-insensitive)
+                            string lower = trimmed.ToLower();
+                            if (lower.Contains("roblox") || lower.Contains("singleton") || lower.Contains("mutex") || lower.Contains(".mtx") || lower.Contains(".shm"))
+                            {
+                                interestingHandles.Add(trimmed);
+                            }
+                        }
+
+                        DebugLog($"[MultiRoblox] PID={proc.Id} handle summary: {mutantCount} Mutants, {eventCount} Events, {sectionCount} Sections");
+                        if (interestingHandles.Count > 0)
+                            DebugLog($"[MultiRoblox] PID={proc.Id} interesting handles:\n  " + string.Join("\n  ", interestingHandles));
+                        else
+                            DebugLog($"[MultiRoblox] PID={proc.Id} WARNING: No Roblox-related handles found! Mutex names may have changed.");
+
+                        // Close known singleton handles
+                        int closedCount = 0;
                         foreach (string line in lines)
                         {
                             string trimmed = line.Trim();
@@ -925,7 +1057,6 @@ namespace RBX_Alt_Manager
                                 trimmed.Contains("RobloxPlayerBeta.exe.shm"))
                             {
                                 string handleHex = trimmed.Split(':')[0].Trim();
-                                // Extract just the handle name for cleaner logging
                                 string handleName = trimmed.Contains("singletonMutex") ? "singletonMutex" :
                                     trimmed.Contains("singletonEvent") ? "singletonEvent" :
                                     trimmed.Contains(".mtx") ? ".mtx" : ".shm";
@@ -940,10 +1071,14 @@ namespace RBX_Alt_Manager
 
                                 Process closeProc = Process.Start(closePsi);
                                 closeProc.WaitForExit(5000);
+                                closedCount++;
 
                                 DebugLog($"[MultiRoblox] Closed {handleName} ({handleHex}) from PID={proc.Id} => exit={closeProc.ExitCode}");
                             }
                         }
+
+                        if (closedCount == 0)
+                            DebugLog($"[MultiRoblox] PID={proc.Id} WARNING: No singleton handles were closed! Roblox may have changed mutex names.");
                     }
                     catch (Exception ex)
                     {

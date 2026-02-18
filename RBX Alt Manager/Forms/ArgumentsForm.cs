@@ -89,6 +89,11 @@ namespace RBX_Alt_Manager
             AccountManager.UseOldJoin = OldJoin.Checked;
         }
 
+        private void BrowserJoinCB_CheckedChanged(object sender, EventArgs e)
+        {
+            AccountManager.BrowserJoin = BrowserJoinCB.Checked;
+        }
+
         private void button1_Click(object sender, EventArgs e)
         {
             AccountManager.CurrentVersion = textBox1.Text;

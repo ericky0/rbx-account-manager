@@ -1,4 +1,5 @@
 ﻿using CefSharp;
+using CefSharp.Handler;
 using CefSharp.WinForms;
 using Newtonsoft.Json.Linq;
 using PuppeteerExtraSharp;
@@ -6,6 +7,7 @@ using PuppeteerExtraSharp.Plugins.ExtraStealth;
 using PuppeteerSharp;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -380,6 +382,21 @@ namespace RBX_Alt_Manager.Classes
         }
     }
 
+    internal class GameJoinRequestHandler : CefSharp.Handler.RequestHandler
+    {
+        public Action<string> OnRobloxPlayerUrl;
+
+        protected override bool OnBeforeBrowse(IWebBrowser chromiumWebBrowser, CefSharp.IBrowser browser, CefSharp.IFrame frame, CefSharp.IRequest request, bool userGesture, bool isRedirect)
+        {
+            if (request.Url.StartsWith("roblox-player:"))
+            {
+                OnRobloxPlayerUrl?.Invoke(request.Url);
+                return true;
+            }
+            return false;
+        }
+    }
+
     internal class CefBrowser : Form
     {
         public static CefBrowser Instance
@@ -394,6 +411,7 @@ namespace RBX_Alt_Manager.Classes
         private static CefBrowser BrowserForm;
         public ChromiumWebBrowser browser { get; private set; }
         public bool BrowserMode = false;
+        public bool GameJoinMode = false;
         private string Password;
 
         private CefBrowser(string Url = "https://roblox.com/")
@@ -407,7 +425,9 @@ namespace RBX_Alt_Manager.Classes
             {
                 e.Cancel = true;
                 Hide();
-                Cef.GetGlobalCookieManager().DeleteCookies();
+                if (!GameJoinMode)
+                    Cef.GetGlobalCookieManager().DeleteCookies();
+                GameJoinMode = false;
             };
 
             AccountManager.SetDarkBar(Handle);
@@ -415,6 +435,26 @@ namespace RBX_Alt_Manager.Classes
             browser = new ChromiumWebBrowser(Url);
             browser.AddressChanged += OnNavigated;
             browser.FrameLoadEnd += OnPageLoaded;
+
+            var requestHandler = new GameJoinRequestHandler();
+            requestHandler.OnRobloxPlayerUrl = (url) =>
+            {
+                Program.Logger.Info($"[BrowserJoin] Intercepted roblox-player URL, launching Roblox client");
+                this.InvokeIfRequired(() =>
+                {
+                    GameJoinMode = false;
+                    Hide();
+                });
+                try
+                {
+                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    Program.Logger.Error($"[BrowserJoin] Failed to launch Roblox: {ex.Message}");
+                }
+            };
+            browser.RequestHandler = requestHandler;
 
             Controls.Add(browser);
         }
@@ -447,6 +487,27 @@ namespace RBX_Alt_Manager.Classes
             browser.Load(URL ?? "https://roblox.com/home");
 
             Show();
+        }
+
+        public void JoinGameViaBrowser(Account account, string gameUrl)
+        {
+            Cef.GetGlobalCookieManager().SetCookie("https://roblox.com", new CefSharp.Cookie()
+            {
+                Name = ".ROBLOSECURITY",
+                Domain = ".roblox.com",
+                Expires = DateTime.Now.AddYears(1),
+                HttpOnly = true,
+                Secure = true,
+                Value = account.SecurityToken
+            });
+
+            BrowserMode = true;
+            GameJoinMode = true;
+
+            browser.Load(gameUrl);
+
+            Show();
+            BringToFront();
         }
 
         private async void OnNavigated(object sender, AddressChangedEventArgs args)
@@ -503,6 +564,160 @@ namespace RBX_Alt_Manager.Classes
             });
 
             browser.ExecuteScriptAsyncWhenPageLoaded(@"document.body.classList.remove(""light-theme"");document.body.classList.add(""dark-theme"");");
+        }
+    }
+
+    internal static class EdgeBrowserJoin
+    {
+        private static Process _edgeProcess;
+        private static readonly string TempProfileDir = Path.Combine(Path.GetTempPath(), "RBXAltManagerJoin");
+        private const int DebugPort = 19222;
+
+        public static async Task<string> Launch(Account account, string gameUrl)
+        {
+            try
+            {
+                string edgePath = FindEdge();
+                if (edgePath == null)
+                    return "ERROR: Microsoft Edge not found on this machine";
+
+                Cleanup();
+                Directory.CreateDirectory(TempProfileDir);
+
+                Program.Logger.Info($"[EdgeBrowserJoin] Launching Edge: {edgePath}");
+
+                _edgeProcess = Process.Start(new ProcessStartInfo
+                {
+                    FileName = edgePath,
+                    Arguments = $"--user-data-dir=\"{TempProfileDir}\" --remote-debugging-port={DebugPort} --no-first-run --no-default-browser-check --window-size=960,750 about:blank",
+                    UseShellExecute = false
+                });
+
+                string wsUrl = await WaitForCDP();
+                if (wsUrl == null)
+                {
+                    Cleanup();
+                    return "ERROR: Failed to connect to Edge DevTools";
+                }
+
+                await SetCookieAndNavigate(wsUrl, account.SecurityToken, gameUrl);
+
+                Program.Logger.Info($"[EdgeBrowserJoin] Successfully opened {gameUrl} in Edge");
+                return "Success";
+            }
+            catch (Exception ex)
+            {
+                Program.Logger.Error($"[EdgeBrowserJoin] {ex}");
+                return $"ERROR: {ex.Message}";
+            }
+        }
+
+        private static string FindEdge()
+        {
+            string[] candidates = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Microsoft\Edge\Application\msedge.exe"),
+            };
+
+            foreach (var path in candidates)
+                if (File.Exists(path)) return path;
+
+            return null;
+        }
+
+        public static void Cleanup()
+        {
+            try
+            {
+                if (_edgeProcess != null && !_edgeProcess.HasExited)
+                {
+                    _edgeProcess.Kill();
+                    _edgeProcess.WaitForExit(3000);
+                }
+            }
+            catch { }
+            _edgeProcess = null;
+        }
+
+        private static async Task<string> WaitForCDP()
+        {
+            using (var http = new HttpClient())
+            {
+                for (int i = 0; i < 30; i++)
+                {
+                    await Task.Delay(500);
+                    try
+                    {
+                        string json = await http.GetStringAsync($"http://localhost:{DebugPort}/json");
+                        var targets = JArray.Parse(json);
+                        var page = targets.FirstOrDefault(t => t["type"]?.ToString() == "page");
+                        if (page != null)
+                        {
+                            string url = page["webSocketDebuggerUrl"]?.ToString();
+                            if (!string.IsNullOrEmpty(url))
+                            {
+                                Program.Logger.Info($"[EdgeBrowserJoin] CDP connected");
+                                return url;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            return null;
+        }
+
+        private static async Task SetCookieAndNavigate(string wsUrl, string securityToken, string gameUrl)
+        {
+            var navigated = new TaskCompletionSource<bool>();
+
+            using (var ws = new WebSocket(wsUrl))
+            {
+                ws.OnMessage += (s, e) =>
+                {
+                    try
+                    {
+                        var msg = JObject.Parse(e.Data);
+                        if (msg["id"]?.ToObject<int>() == 2)
+                            navigated.TrySetResult(true);
+                    }
+                    catch { }
+                };
+
+                ws.Connect();
+
+                // Set .ROBLOSECURITY cookie
+                ws.Send(new JObject
+                {
+                    ["id"] = 1,
+                    ["method"] = "Network.setCookie",
+                    ["params"] = new JObject
+                    {
+                        ["name"] = ".ROBLOSECURITY",
+                        ["value"] = securityToken,
+                        ["domain"] = ".roblox.com",
+                        ["path"] = "/",
+                        ["httpOnly"] = true,
+                        ["secure"] = true
+                    }
+                }.ToString());
+
+                await Task.Delay(500);
+
+                // Navigate to game page
+                ws.Send(new JObject
+                {
+                    ["id"] = 2,
+                    ["method"] = "Page.navigate",
+                    ["params"] = new JObject
+                    {
+                        ["url"] = gameUrl
+                    }
+                }.ToString());
+
+                await Task.WhenAny(navigated.Task, Task.Delay(15000));
+            }
         }
     }
 

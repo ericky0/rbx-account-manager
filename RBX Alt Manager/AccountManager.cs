@@ -79,6 +79,7 @@ namespace RBX_Alt_Manager
         private readonly static DateTime startTime = DateTime.Now;
         public static bool IsTeleport = false;
         public static bool UseOldJoin = false;
+        public static bool BrowserJoin = false;
         public static bool ShuffleJobID = false;
         private static bool PuppeteerSupported;
         public static string CurrentVersion;
